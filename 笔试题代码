@@ -1,0 +1,270 @@
+1.功能性测试
+//发送端:
+#include <iostream>
+#include <iomanip>
+#include <cstring>
+#include <sstream>
+
+#include "uDDS.h"
+#include "md5.h"
+
+#define DATA_SIZE 1024 // 指定数据大小为1KB
+
+int main(int argc, char** argv)
+{
+    uDDS::Initialize();
+    uDDS::Topic topic("MyData", sizeof(uDDS::DataHeader) + DATA_SIZE + 16);
+
+    uDDS::Publisher publisher(topic);
+    uDDS::Subscriber subscriber(topic);
+
+    uDDS::DataHeader header;
+    std::stringstream ss;
+    for (int i = 0; i < DATA_SIZE; i++) {
+        ss << "a";
+    }
+    std::string data = ss.str();
+
+    md5_state_t state;
+    unsigned char md5[16];
+    md5_init(&state);
+    md5_append(&state, reinterpret_cast<const unsigned char*>(data.c_str()), data.length());
+    md5_finish(&state, md5);
+
+    header.size = DATA_SIZE;
+    memcpy(header.md5, md5, 16);
+
+    while (true) {
+        publisher.publish(reinterpret_cast<unsigned char*>(&header), reinterpret_cast<const unsigned char*>(data.c_str()));
+        uDDS::Sleep(1000); // 每秒钟发布一次消息
+    }
+
+    return 0;
+}
+
+
+//接收端:
+
+cpp
+#include <iostream>
+#include <iomanip>
+#include <cstring>
+
+#include "uDDS.h"
+#include "md5.h"
+
+#define DATA_SIZE 1024 // 指定数据大小为1KB
+
+int main(int argc, char** argv)
+{
+    uDDS::Initialize();
+    uDDS::Topic topic("MyData", sizeof(uDDS::DataHeader) + DATA_SIZE + 16);
+
+    uDDS::Publisher publisher(topic);
+    uDDS::Subscriber subscriber(topic);
+
+    while (true) {
+        const unsigned char* data;
+        int size;
+        if (subscriber.receive(data, size)) {
+            uDDS::DataHeader header = *reinterpret_cast<const uDDS::DataHeader*>(data);
+
+            md5_state_t state;
+            unsigned char md5[16];
+            md5_init(&state);
+            md5_append(&state, data + sizeof(uDDS::DataHeader), header.size);
+            md5_finish(&state, md5);
+
+            if (memcmp(md5, header.md5, 16) != 0) {
+                std::cout << "MD5 mismatch!" << std::endl;
+            }
+        }
+    }
+
+    return 0;
+}
+
+
+2.吞吐量测试
+//发送端:
+#include <iostream>
+#include <iomanip>
+#include <cstring>
+#include <sstream>
+
+#include "uDDS.h"
+
+#define DATA_SIZE 1024 // 指定数据大小为1KB
+
+int main(int argc, char** argv)
+{
+    uDDS::Initialize();
+    uDDS::Topic topic("MyData", sizeof(uDDS::DataHeader) + DATA_SIZE + 16);
+
+    uDDS::Publisher publisher(topic);
+    uDDS::Subscriber subscriber(topic);
+
+    uDDS::Timer timer;
+    int count = 0;
+    while (true) {
+        std::stringstream ss;
+        for (int i = 0; i < DATA_SIZE; i++) {
+            ss << "a";
+        }
+        std::string data = ss.str();
+
+        const uDDS::DataHeader header{ DATA_SIZE };
+        publisher.publish(reinterpret_cast<const unsigned char*>(&header), reinterpret_cast<const unsigned char*>(data.c_str()));
+
+        count++;
+        if (count % 1000 == 0) { // 每1000次消息输出一次吞吐量
+            double elapsedSeconds = timer.elapsed_seconds();
+            std::cout << "Publish throughput: " << std::fixed << std::setprecision(2) << count * (DATA_SIZE + sizeof(uDDS::DataHeader)) * 8.0 / elapsedSeconds / 1024 / 1024 << " Mbps" << std::endl;
+            count = 0;
+            timer.reset();
+        }
+    }
+
+    return 0;
+    
+    //接收端
+    #include <iostream>
+#include <iomanip>
+#include <cstring>
+
+#include "uDDS.h"
+
+#define DATA_SIZE 1024 // 指定数据大小为1KB
+
+int main(int argc, char** argv)
+{
+    uDDS::Initialize();
+    uDDS::Topic topic("MyData", sizeof(uDDS::DataHeader) + DATA_SIZE + 16);
+
+    uDDS::Publisher publisher(topic);
+    uDDS::Subscriber subscriber(topic);
+
+    int totalCount = 0;
+    int lostCount = 0;
+    uDDS::Timer timer;
+    while (true) {
+        const unsigned char* data;
+        int size;
+        if (subscriber.receive(data, size)) {
+            uDDS::DataHeader header = *reinterpret_cast<const uDDS::DataHeader*>(data);
+
+            totalCount++;
+            if (totalCount % 1000 == 0) { // 每1000次消息输出一次吞吐量
+                double elapsedSeconds = timer.elapsed_seconds();
+                std::cout << "Receive throughput: " << std::fixed << std::setprecision(2) << totalCount * (DATA_SIZE + sizeof(uDDS::DataHeader)) * 8.0 / elapsedSeconds / 1024 / 1024 << " Mbps" << std::endl;
+                std::cout << "Lost ratio: " << std::fixed << std::setprecision(2) << lostCount * 100.0 / totalCount << "%" << std::endl;
+                totalCount = 0;
+                lostCount = 0;
+                timer.reset();
+            }
+
+            if (header.size != DATA_SIZE) {
+                std::cout << "Data size mismatch!" << std::endl;
+            }
+
+            if (size != sizeof(uDDS::DataHeader) + DATA_SIZE) {
+                std::cout << "Message size mismatch!" << std::endl;
+            }
+
+            if (memcmp(data + sizeof(uDDS::DataHeader), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DATA_SIZE) != 0) {
+                std::cout << "Data content mismatch!" << std::endl;
+            }
+        } else {
+            lostCount++;
+        }
+    }
+
+    return 0;
+}
+
+
+3.时延测试
+//发送端:
+#include <iostream>
+#include <iomanip>
+#include <cstring>
+#include <sstream>
+
+#include "uDDS.h"
+
+#define DATA_SIZE 1024 // 指定数据大小为1KB
+#define LOOP_COUNT 10000 // 指定循环次数为10000次
+
+int main(int argc, char** argv)
+{
+    uDDS::Initialize();
+    uDDS::Topic topic("MyData", sizeof(uDDS::DataHeader) + DATA_SIZE + 16);
+
+    uDDS::Publisher publisher(topic);
+    uDDS::Subscriber subscriber(topic);
+
+    uDDS::Timer timer;
+    for (int i = 0; i < LOOP_COUNT; i++) {
+        std::stringstream ss;
+        for (int j = 0; j < DATA_SIZE; j++) {
+            ss << "a";
+        }
+        std::string data = ss.str();
+
+        const uDDS::DataHeader header{ DATA_SIZE };
+        uDDS::TimePoint sendTime = uDDS::Now();
+        publisher.publish(reinterpret_cast<const unsigned char*>(&header), reinterpret_cast<const unsigned char*>(data.c_str()));
+
+        const unsigned char* replyData;
+        int replySize;
+        if (subscriber.receive(replyData, replySize)) {
+            if (replySize != sizeof(uDDS::DataHeader) + DATA_SIZE) {
+                std::cout << "Reply message size mismatch!" << std::endl;
+            } else {
+                uDDS::DataHeader replyHeader = *reinterpret_cast<const uDDS::DataHeader*>(replyData);
+                if (replyHeader.size != DATA_SIZE) {
+                    std::cout << "Reply data size mismatch!" << std::endl;
+                } else {
+                    uDDS::TimePoint receiveTime = uDDS::Now();
+                    std::chrono::duration<double, std::micro> elapsedMicroseconds = receiveTime - sendTime;
+                    std::cout << "Latency: " << std::fixed << std::setprecision(2) << elapsedMicroseconds.count() / 2.0 << " us" << std::endl;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+    
+   //接收端
+   #include <iostream>
+#include <iomanip>
+#include <cstring>
+
+#include "uDDS.h"
+
+#define DATA_SIZE 1024 // 指定数据大小为1KB
+
+int main(int argc, char** argv)
+{
+    uDDS::Initialize();
+    uDDS::Topic topic("MyData", sizeof(uDDS::DataHeader) + DATA_SIZE + 16);
+
+    uDDS::Publisher publisher(topic);
+    uDDS::Subscriber subscriber(topic);
+
+    while (true) {
+        const unsigned char* data;
+        int size;
+        if (subscriber.receive(data, size)) {
+            uDDS::DataHeader header = *reinterpret_cast<const uDDS::DataHeader*>(data);
+
+            publisher.publish(reinterpret_cast<const unsigned char*>(&header), data + sizeof(uDDS::DataHeader));
+        }
+    }
+
+    return 0;
+}
+
+   
+   
